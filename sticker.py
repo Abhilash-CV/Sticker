@@ -1,102 +1,134 @@
 import streamlit as st
 import pandas as pd
+import io
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.pdfgen import canvas
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+
 import barcode
 from barcode.writer import ImageWriter
-import io
 from PIL import Image
 
-# ---------------------------
-# REGISTER FONT
-# ---------------------------
-pdfmetrics.registerFont(
-    TTFont("Times-Bold", "Times New Roman Bold.ttf")
-)
+# -------------------------------------------------
+# PAGE & LABEL SETTINGS (EXACT PHYSICAL SIZE)
+# -------------------------------------------------
+LABEL_WIDTH = 5 * cm
+LABEL_HEIGHT = 3 * cm
 
-# ---------------------------
-# LABEL SIZE (EXACT)
-# ---------------------------
-LABEL_W = 5 * cm
-LABEL_H = 3 * cm
+PAGE_WIDTH, PAGE_HEIGHT = A4
 
-PAGE_W, PAGE_H = A4
+COLS = int(PAGE_WIDTH // LABEL_WIDTH)
+ROWS = int(PAGE_HEIGHT // LABEL_HEIGHT)
 
-COLS = int(PAGE_W // LABEL_W)
-ROWS = int(PAGE_H // LABEL_H)
-
-# ---------------------------
+# -------------------------------------------------
 # UI
-# ---------------------------
-st.title("🖨️ Sticker PDF Generator (5cm × 3cm)")
+# -------------------------------------------------
+st.set_page_config(page_title="Sticker PDF Generator")
+st.title("🖨️ Sticker PDF Generator (5 cm × 3 cm)")
 
 logo_file = st.file_uploader("Upload Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
-excel_file = st.file_uploader("Upload Excel", type=["xlsx"])
+excel_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
+# -------------------------------------------------
+# PROCESS
+# -------------------------------------------------
 if logo_file and excel_file and st.button("Generate PDF"):
 
+    # Read Excel
     df = pd.read_excel(excel_file)
 
-    # Normalize columns
+    # Normalize column names
     df.columns = (
-        df.columns.str.strip().str.lower().str.replace(r"\s+", "", regex=True)
+        df.columns
+        .str.strip()
+        .str.lower()
+        .str.replace(r"\s+", "", regex=True)
     )
 
-    required = {"code", "name", "district"}
-    if not required.issubset(df.columns):
-        st.error(f"Excel columns detected: {list(df.columns)}")
+    required_cols = {"code", "name", "district"}
+    if not required_cols.issubset(df.columns):
+        st.error(f"Excel columns found: {list(df.columns)}")
         st.stop()
 
-    logo_img = Image.open(logo_file)
+    # Load logo once
+    logo_img = Image.open(logo_file).convert("RGBA")
     logo_buffer = io.BytesIO()
     logo_img.save(logo_buffer, format="PNG")
     logo_buffer.seek(0)
 
+    # PDF buffer
     pdf_buffer = io.BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=A4)
 
-    x_start = 0
-    y_start = PAGE_H - LABEL_H
-    col = row = 0
+    col = 0
+    row = 0
 
     for _, r in df.iterrows():
-        x = x_start + col * LABEL_W
-        y = y_start - row * LABEL_H
 
-        # Border (optional – comment if not needed)
-        c.rect(x, y, LABEL_W, LABEL_H)
+        x = col * LABEL_WIDTH
+        y = PAGE_HEIGHT - ((row + 1) * LABEL_HEIGHT)
 
-        # Logo
-        c.drawImage(logo_buffer, x + 0.2*cm, y + LABEL_H - 1.4*cm,
-                    width=1.2*cm, height=1.2*cm, mask='auto')
+        # Optional border (comment out if not needed)
+        c.rect(x, y, LABEL_WIDTH, LABEL_HEIGHT)
 
-        # Center Text
+        # -------------------------------------------------
+        # LOGO (TOP-LEFT)
+        # -------------------------------------------------
+        c.drawImage(
+            logo_buffer,
+            x + 0.2 * cm,
+            y + LABEL_HEIGHT - 1.4 * cm,
+            width=1.2 * cm,
+            height=1.2 * cm,
+            mask="auto"
+        )
+
+        # -------------------------------------------------
+        # TEXT (CENTERED, Times Bold, 14pt)
+        # -------------------------------------------------
         c.setFont("Times-Bold", 14)
 
-        c.drawCentredString(x + LABEL_W/2, y + LABEL_H - 0.8*cm, str(r["code"]))
-        c.drawCentredString(x + LABEL_W/2, y + LABEL_H - 1.4*cm, str(r["name"]))
-        c.drawCentredString(x + LABEL_W/2, y + LABEL_H - 2.0*cm, str(r["district"]))
+        c.drawCentredString(
+            x + LABEL_WIDTH / 2,
+            y + LABEL_HEIGHT - 0.8 * cm,
+            str(r["code"])
+        )
 
-        # Barcode
-        code128 = barcode.get_barcode_class("code128")
-        bc = code128(str(r["code"]), writer=ImageWriter())
+        c.drawCentredString(
+            x + LABEL_WIDTH / 2,
+            y + LABEL_HEIGHT - 1.4 * cm,
+            str(r["name"])
+        )
+
+        c.drawCentredString(
+            x + LABEL_WIDTH / 2,
+            y + LABEL_HEIGHT - 2.0 * cm,
+            str(r["district"])
+        )
+
+        # -------------------------------------------------
+        # BARCODE
+        # -------------------------------------------------
+        CODE128 = barcode.get_barcode_class("code128")
+        bc = CODE128(str(r["code"]), writer=ImageWriter())
 
         bc_buffer = io.BytesIO()
-        bc.write(bc_buffer, {"module_height": 8, "quiet_zone": 1})
+        bc.write(bc_buffer, {"quiet_zone": 1, "module_height": 8})
         bc_buffer.seek(0)
 
         c.drawImage(
             bc_buffer,
-            x + 0.4*cm,
-            y + 0.2*cm,
-            width=LABEL_W - 0.8*cm,
-            height=0.8*cm,
-            mask='auto'
+            x + 0.4 * cm,
+            y + 0.2 * cm,
+            width=LABEL_WIDTH - 0.8 * cm,
+            height=0.8 * cm,
+            mask="auto"
         )
 
+        # -------------------------------------------------
+        # GRID MANAGEMENT
+        # -------------------------------------------------
         col += 1
         if col >= COLS:
             col = 0
@@ -109,11 +141,14 @@ if logo_file and excel_file and st.button("Generate PDF"):
     c.save()
     pdf_buffer.seek(0)
 
+    # -------------------------------------------------
+    # DOWNLOAD
+    # -------------------------------------------------
     st.success("PDF generated successfully ✅")
 
     st.download_button(
-        "⬇️ Download Sticker PDF",
-        pdf_buffer,
+        label="⬇️ Download Sticker PDF",
+        data=pdf_buffer,
         file_name="stickers_5x3cm.pdf",
         mime="application/pdf"
     )
