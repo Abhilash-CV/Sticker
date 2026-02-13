@@ -1,86 +1,108 @@
 import streamlit as st
+import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import barcode
 from barcode.writer import ImageWriter
-import io
+import io, zipfile
 
-# ---------------------------
-# SETTINGS
-# ---------------------------
+# ==========================
+# LABEL SETTINGS
+# ==========================
 LABEL_WIDTH_CM = 6
 LABEL_HEIGHT_CM = 3
-DPI = 203   # Use 300 for laser printers
+DPI = 203  # 203 = thermal, 300 = laser
 
 WIDTH_PX = int((LABEL_WIDTH_CM / 2.54) * DPI)
 HEIGHT_PX = int((LABEL_HEIGHT_CM / 2.54) * DPI)
 
-# ---------------------------
+# ==========================
 # UI
-# ---------------------------
-st.title("🖨️ Sticker Generator (Exact Size)")
+# ==========================
+st.title("🖨️ Sticker Generator (Excel + Logo)")
 
-code = st.text_input("Center Code", "PC-001")
-name = st.text_input("Center Name", "Government HSS")
-district = st.text_input("District", "Ernakulam")
+logo_file = st.file_uploader("Upload Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
+excel_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
-if st.button("Generate Sticker"):
+if logo_file and excel_file and st.button("Generate Stickers"):
 
-    # Canvas
-    img = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
-    draw = ImageDraw.Draw(img)
+    df = pd.read_excel(excel_file)
 
-    # Fonts (Linux-safe)
+    required_cols = {"code", "name", "district"}
+    if not required_cols.issubset(df.columns):
+        st.error("Excel must contain columns: code, name, district")
+        st.stop()
+
+    logo = Image.open(logo_file).convert("RGBA")
+    logo = logo.resize((60, 60))
+
     font_big = ImageFont.load_default()
     font_small = ImageFont.load_default()
 
-    # ---------------------------
-    # Helper: Center Text
-    # ---------------------------
-    def center_text(y, text, font):
-        w = draw.textlength(text, font=font)
-        x = (WIDTH_PX - w) // 2
-        draw.text((x, y), text, fill="black", font=font)
+    zip_buffer = io.BytesIO()
+    zip_file = zipfile.ZipFile(zip_buffer, "w")
 
-    # ---------------------------
-    # Text Layout (TOP → DOWN)
-    # ---------------------------
-    center_text(10, code, font_big)
-    center_text(35, name, font_big)
-    center_text(60, district, font_small)
+    for idx, row in df.iterrows():
+        code = str(row["code"])
+        name = str(row["name"])
+        district = str(row["district"])
 
-    # ---------------------------
-    # Barcode
-    # ---------------------------
-    CODE128 = barcode.get_barcode_class("code128")
-    bc = CODE128(code, writer=ImageWriter())
+        img = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
+        draw = ImageDraw.Draw(img)
 
-    buffer = io.BytesIO()
-    bc.write(buffer, {"quiet_zone": 1})
-    buffer.seek(0)
+        # --------------------------
+        # Logo (Top-Left)
+        # --------------------------
+        img.paste(logo, (10, 10), logo)
 
-    barcode_img = Image.open(buffer)
-    barcode_width = int(WIDTH_PX * 0.85)
-    barcode_height = int(HEIGHT_PX * 0.30)
-    barcode_img = barcode_img.resize((barcode_width, barcode_height))
+        # --------------------------
+        # Center Text Helper
+        # --------------------------
+        def center_text(y, text, font):
+            w = draw.textlength(text, font=font)
+            x = (WIDTH_PX - w) // 2
+            draw.text((x, y), text, fill="black", font=font)
 
-    bx = (WIDTH_PX - barcode_width) // 2
-    by = HEIGHT_PX - barcode_height - 10
-    img.paste(barcode_img, (bx, by))
+        # --------------------------
+        # Text
+        # --------------------------
+        center_text(10, code, font_big)
+        center_text(35, name, font_big)
+        center_text(60, district, font_small)
 
-    # ---------------------------
-    # Preview
-    # ---------------------------
-    st.image(img, caption=f"{LABEL_WIDTH_CM}cm × {LABEL_HEIGHT_CM}cm @ {DPI} DPI")
+        # --------------------------
+        # Barcode
+        # --------------------------
+        CODE128 = barcode.get_barcode_class("code128")
+        bc = CODE128(code, writer=ImageWriter())
 
-    # ---------------------------
-    # Download
-    # ---------------------------
-    out = io.BytesIO()
-    img.save(out, format="PNG", dpi=(DPI, DPI))
+        bc_buffer = io.BytesIO()
+        bc.write(bc_buffer, {"quiet_zone": 1})
+        bc_buffer.seek(0)
 
+        bc_img = Image.open(bc_buffer)
+        bc_w = int(WIDTH_PX * 0.85)
+        bc_h = int(HEIGHT_PX * 0.30)
+        bc_img = bc_img.resize((bc_w, bc_h))
+
+        bx = (WIDTH_PX - bc_w) // 2
+        by = HEIGHT_PX - bc_h - 8
+        img.paste(bc_img, (bx, by))
+
+        # --------------------------
+        # Save PNG
+        # --------------------------
+        img_buffer = io.BytesIO()
+        img.save(img_buffer, format="PNG", dpi=(DPI, DPI))
+
+        zip_file.writestr(f"{code}.png", img_buffer.getvalue())
+
+    zip_file.close()
+    zip_buffer.seek(0)
+
+    st.success("Stickers generated successfully ✅")
     st.download_button(
-        "⬇️ Download Sticker",
-        out.getvalue(),
-        file_name=f"{code}_label.png",
-        mime="image/png"
+        "⬇️ Download All Stickers (ZIP)",
+        zip_buffer.getvalue(),
+        "stickers.zip",
+        mime="application/zip"
     )
