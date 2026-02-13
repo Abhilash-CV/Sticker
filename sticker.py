@@ -26,10 +26,19 @@ excel_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 if logo_file and excel_file and st.button("Generate Stickers"):
 
     df = pd.read_excel(excel_file)
-
+    
+    # Normalize column names
+    df.columns = (
+        df.columns
+          .str.strip()       # remove spaces
+          .str.lower()       # lowercase
+          .str.replace(r"\s+", "", regex=True)  # remove hidden spaces
+    )
+    
     required_cols = {"code", "name", "district"}
-    if not required_cols.issubset(df.columns):
-        st.error("Excel must contain columns: code, name, district")
+    
+    if not required_cols.issubset(set(df.columns)):
+        st.error(f"Excel columns found: {list(df.columns)}")
         st.stop()
 
     logo = Image.open(logo_file).convert("RGBA")
