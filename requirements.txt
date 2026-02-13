@@ -1,5 +1,6 @@
 streamlit
+pandas
 pillow
 python-barcode
-pandas
+reportlab
 openpyxl
