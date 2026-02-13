@@ -1,117 +1,119 @@
 import streamlit as st
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 import barcode
 from barcode.writer import ImageWriter
-import io, zipfile
+import io
+from PIL import Image
 
-# ==========================
-# LABEL SETTINGS
-# ==========================
-LABEL_WIDTH_CM = 6
-LABEL_HEIGHT_CM = 3
-DPI = 203  # 203 = thermal, 300 = laser
+# ---------------------------
+# REGISTER FONT
+# ---------------------------
+pdfmetrics.registerFont(
+    TTFont("Times-Bold", "Times New Roman Bold.ttf")
+)
 
-WIDTH_PX = int((LABEL_WIDTH_CM / 2.54) * DPI)
-HEIGHT_PX = int((LABEL_HEIGHT_CM / 2.54) * DPI)
+# ---------------------------
+# LABEL SIZE (EXACT)
+# ---------------------------
+LABEL_W = 5 * cm
+LABEL_H = 3 * cm
 
-# ==========================
+PAGE_W, PAGE_H = A4
+
+COLS = int(PAGE_W // LABEL_W)
+ROWS = int(PAGE_H // LABEL_H)
+
+# ---------------------------
 # UI
-# ==========================
-st.title("🖨️ Sticker Generator (Excel + Logo)")
+# ---------------------------
+st.title("🖨️ Sticker PDF Generator (5cm × 3cm)")
 
 logo_file = st.file_uploader("Upload Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
-excel_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+excel_file = st.file_uploader("Upload Excel", type=["xlsx"])
 
-if logo_file and excel_file and st.button("Generate Stickers"):
+if logo_file and excel_file and st.button("Generate PDF"):
 
     df = pd.read_excel(excel_file)
-    
-    # Normalize column names
+
+    # Normalize columns
     df.columns = (
-        df.columns
-          .str.strip()       # remove spaces
-          .str.lower()       # lowercase
-          .str.replace(r"\s+", "", regex=True)  # remove hidden spaces
+        df.columns.str.strip().str.lower().str.replace(r"\s+", "", regex=True)
     )
-    
-    required_cols = {"code", "name", "district"}
-    
-    if not required_cols.issubset(set(df.columns)):
-        st.error(f"Excel columns found: {list(df.columns)}")
+
+    required = {"code", "name", "district"}
+    if not required.issubset(df.columns):
+        st.error(f"Excel columns detected: {list(df.columns)}")
         st.stop()
 
-    logo = Image.open(logo_file).convert("RGBA")
-    logo = logo.resize((60, 60))
+    logo_img = Image.open(logo_file)
+    logo_buffer = io.BytesIO()
+    logo_img.save(logo_buffer, format="PNG")
+    logo_buffer.seek(0)
 
-    font_big = ImageFont.load_default()
-    font_small = ImageFont.load_default()
+    pdf_buffer = io.BytesIO()
+    c = canvas.Canvas(pdf_buffer, pagesize=A4)
 
-    zip_buffer = io.BytesIO()
-    zip_file = zipfile.ZipFile(zip_buffer, "w")
+    x_start = 0
+    y_start = PAGE_H - LABEL_H
+    col = row = 0
 
-    for idx, row in df.iterrows():
-        code = str(row["code"])
-        name = str(row["name"])
-        district = str(row["district"])
+    for _, r in df.iterrows():
+        x = x_start + col * LABEL_W
+        y = y_start - row * LABEL_H
 
-        img = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
-        draw = ImageDraw.Draw(img)
+        # Border (optional – comment if not needed)
+        c.rect(x, y, LABEL_W, LABEL_H)
 
-        # --------------------------
-        # Logo (Top-Left)
-        # --------------------------
-        img.paste(logo, (10, 10), logo)
+        # Logo
+        c.drawImage(logo_buffer, x + 0.2*cm, y + LABEL_H - 1.4*cm,
+                    width=1.2*cm, height=1.2*cm, mask='auto')
 
-        # --------------------------
-        # Center Text Helper
-        # --------------------------
-        def center_text(y, text, font):
-            w = draw.textlength(text, font=font)
-            x = (WIDTH_PX - w) // 2
-            draw.text((x, y), text, fill="black", font=font)
+        # Center Text
+        c.setFont("Times-Bold", 14)
 
-        # --------------------------
-        # Text
-        # --------------------------
-        center_text(10, code, font_big)
-        center_text(35, name, font_big)
-        center_text(60, district, font_small)
+        c.drawCentredString(x + LABEL_W/2, y + LABEL_H - 0.8*cm, str(r["code"]))
+        c.drawCentredString(x + LABEL_W/2, y + LABEL_H - 1.4*cm, str(r["name"]))
+        c.drawCentredString(x + LABEL_W/2, y + LABEL_H - 2.0*cm, str(r["district"]))
 
-        # --------------------------
         # Barcode
-        # --------------------------
-        CODE128 = barcode.get_barcode_class("code128")
-        bc = CODE128(code, writer=ImageWriter())
+        code128 = barcode.get_barcode_class("code128")
+        bc = code128(str(r["code"]), writer=ImageWriter())
 
         bc_buffer = io.BytesIO()
-        bc.write(bc_buffer, {"quiet_zone": 1})
+        bc.write(bc_buffer, {"module_height": 8, "quiet_zone": 1})
         bc_buffer.seek(0)
 
-        bc_img = Image.open(bc_buffer)
-        bc_w = int(WIDTH_PX * 0.85)
-        bc_h = int(HEIGHT_PX * 0.30)
-        bc_img = bc_img.resize((bc_w, bc_h))
+        c.drawImage(
+            bc_buffer,
+            x + 0.4*cm,
+            y + 0.2*cm,
+            width=LABEL_W - 0.8*cm,
+            height=0.8*cm,
+            mask='auto'
+        )
 
-        bx = (WIDTH_PX - bc_w) // 2
-        by = HEIGHT_PX - bc_h - 8
-        img.paste(bc_img, (bx, by))
+        col += 1
+        if col >= COLS:
+            col = 0
+            row += 1
 
-        # --------------------------
-        # Save PNG
-        # --------------------------
-        img_buffer = io.BytesIO()
-        img.save(img_buffer, format="PNG", dpi=(DPI, DPI))
+        if row >= ROWS:
+            c.showPage()
+            row = 0
 
-        zip_file.writestr(f"{code}.png", img_buffer.getvalue())
+    c.save()
+    pdf_buffer.seek(0)
 
-    zip_file.close()
-    zip_buffer.seek(0)
+    st.success("PDF generated successfully ✅")
 
-    st.success("Stickers generated successfully ✅")
     st.download_button(
-        "⬇️ Download All Stickers (ZIP)",
-        zip_buffer.getvalue(),
-        "stickers.zip",
-        mime="application/zip"
+        "⬇️ Download Sticker PDF",
+        pdf_buffer,
+        file_name="stickers_5x3cm.pdf",
+        mime="application/pdf"
     )
